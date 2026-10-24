@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct TodoView: View {
@@ -124,51 +125,48 @@ private struct TodoRow: View {
     let isGoal: Bool
     @ObservedObject var store: TodoStore
     @State private var hovering = false
+    /// The text while it's being edited, so the row grows as you type.
     @State private var editText = ""
-    @FocusState private var editFocused: Bool
+    /// Where the title was clicked, to put the caret there.
+    @State private var clickPoint: CGPoint?
+    /// Bumped by a double click, which selects the whole title.
+    @State private var selectAllRequest = 0
 
     private var editing: Bool { store.editingID == item.id }
 
     var body: some View {
-        HStack(spacing: 8) {
+        // Top-aligned so the checkbox, star and ✕ sit on a long title's first line.
+        HStack(alignment: .top, spacing: 8) {
             Button { store.toggle(item.id) } label: {
                 Image(systemName: item.done ? "checkmark.square.fill" : "square")
                     .font(.system(size: 14))
                     .foregroundStyle(Color.gray)
+                    .frame(height: TitleField.lineHeight)
             }
             .buttonStyle(.plain)
 
-            if editing {
-                TextField("", text: $editText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13, weight: isGoal ? .semibold : .regular))
-                    .focused($editFocused)
-                    .onSubmit(commitEdit)
-                    .onAppear {
-                        editText = item.title
-                        editFocused = true
-                    }
-                    .onChange(of: editFocused) { _, focused in
-                        if !focused { commitEdit() }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text(item.title)
-                    .font(.system(size: 13, weight: isGoal ? .semibold : .regular))
-                    .strikethrough(item.done)
-                    .foregroundStyle(item.done ? .secondary : .primary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { store.editingID = item.id }
-                    .help("Double-click to edit")
-            }
+            // One click edits with the caret where you clicked; the field itself takes clicks only while editing.
+            TitleField(title: item.title, text: $editText, editing: editing, clickPoint: clickPoint,
+                       selectAllRequest: selectAllRequest,
+                       font: .systemFont(ofSize: 13, weight: isGoal ? .semibold : .regular),
+                       done: item.done, onCommit: commitEdit)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture(coordinateSpace: .local) { location in
+                    // A fast double click's second click can arrive here before the field has taken focus.
+                    if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { selectAllRequest += 1 }
+                    guard !editing else { return }
+                    clickPoint = location
+                    editText = item.title
+                    store.editingID = item.id
+                }
 
             // Star = "this is my top goal". Always visible on the goal, on hover otherwise.
             Button { store.toggleGoal(item.id) } label: {
                 Image(systemName: isGoal ? "star.fill" : "star")
                     .font(.system(size: 12))
                     .foregroundStyle(isGoal ? Color.orange : Color.secondary)
+                    .frame(height: TitleField.lineHeight)
             }
             .buttonStyle(.plain)
             .help(isGoal ? "Remove as top goal" : "Set as top goal")
@@ -178,6 +176,7 @@ private struct TodoRow: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .frame(height: TitleField.lineHeight)
             }
             .buttonStyle(.plain)
             .help("Delete")
@@ -190,10 +189,169 @@ private struct TodoRow: View {
         .onHover { hovering = $0 }
     }
 
-    private func commitEdit() {
-        // Escape clears editingID first, which turns this into a cancel.
-        guard store.editingID == item.id else { return }
-        store.rename(item.id, to: editText)
-        store.editingID = nil
+    private func commitEdit(_ text: String) {
+        store.rename(item.id, to: text)
+        if store.editingID == item.id { store.editingID = nil }
+    }
+}
+
+/// A row's title: wraps onto as many lines as it needs, and edits in place, growing as you type.
+private struct TitleField: NSViewRepresentable {
+    let title: String
+    @Binding var text: String
+    let editing: Bool
+    let clickPoint: CGPoint?
+    let selectAllRequest: Int
+    let font: NSFont
+    let done: Bool
+    let onCommit: (String) -> Void
+
+    /// Height of one line of a title, for lining the row's buttons up with the first line.
+    static let lineHeight: CGFloat = {
+        let cell = NSTextFieldCell(textCell: "A")
+        cell.font = .systemFont(ofSize: 13)
+        return ceil(cell.cellSize.height)
+    }()
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> TitleTextField {
+        let field = TitleTextField(wrappingLabelWithString: "")
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.appearance = NSAppearance(named: .aqua) // the popup is always light
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.maximumNumberOfLines = 0
+        field.lineBreakMode = .byWordWrapping
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: TitleTextField, context: Context) {
+        context.coordinator.parent = self
+        if !editing, field.currentEditor() != nil {
+            // Editing was cancelled (Escape): drop the changes. This has to come before isEditable = false,
+            // which would save them.
+            context.coordinator.cancelled = true
+            field.abortEditing()
+            context.coordinator.cancelled = false
+        }
+        field.font = font
+        field.interactive = editing
+        field.isEditable = editing
+        field.isSelectable = editing
+
+        if editing {
+            if let editor = field.currentEditor() as? NSTextView {
+                context.coordinator.applySelectAll(editor)
+                return
+            }
+            guard !context.coordinator.focusing else { return }
+            field.attributedStringValue = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+            // Focus after this update: ending another row's edit changes the store.
+            context.coordinator.focusing = true
+            let point = clickPoint
+            DispatchQueue.main.async {
+                context.coordinator.focusing = false
+                guard let window = field.window, field.currentEditor() == nil, window.makeFirstResponder(field),
+                      let editor = field.currentEditor() as? NSTextView else { return }
+                if context.coordinator.applySelectAll(editor) { return }
+                var location = (editor.string as NSString).length
+                if let point {
+                    let inField = NSPoint(x: point.x, y: field.isFlipped ? point.y : field.bounds.height - point.y)
+                    location = editor.characterIndexForInsertion(at: editor.convert(inField, from: field))
+                }
+                editor.setSelectedRange(NSRange(location: location, length: 0))
+            }
+        } else {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: done ? NSColor.secondaryLabelColor : NSColor.labelColor,
+            ]
+            if done { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            field.attributedStringValue = NSAttributedString(string: title, attributes: attributes)
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView field: TitleTextField, context: Context) -> CGSize? {
+        let width = proposal.width ?? 200
+        func height(_ string: String) -> CGFloat {
+            let cell = NSTextFieldCell(textCell: string)
+            cell.font = font
+            cell.wraps = true
+            cell.lineBreakMode = .byWordWrapping
+            return cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height
+        }
+        let h = max(height(editing ? text : title), height("A"))
+        return CGSize(width: width, height: ceil(h))
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: TitleField
+        var cancelled = false
+        var focusing = false
+        private var appliedSelectAll = 0
+
+        /// Selects the whole title if a double click asked for it since the last time.
+        @discardableResult
+        func applySelectAll(_ editor: NSTextView) -> Bool {
+            guard parent.selectAllRequest != appliedSelectAll else { return false }
+            appliedSelectAll = parent.selectAllRequest
+            editor.selectAll(nil)
+            return true
+        }
+
+        init(_ parent: TitleField) {
+            self.parent = parent
+            appliedSelectAll = parent.selectAllRequest
+        }
+
+        func controlTextDidChange(_ note: Notification) {
+            guard let field = note.object as? NSTextField else { return }
+            // Titles are one line: pasted line breaks become spaces.
+            if let editor = field.currentEditor() as? NSTextView, editor.string.rangeOfCharacter(from: .newlines) != nil {
+                let selection = editor.selectedRanges
+                editor.string = editor.string.components(separatedBy: .newlines).joined(separator: " ")
+                editor.selectedRanges = selection
+            }
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ note: Notification) {
+            guard !cancelled, let field = note.object as? NSTextField else { return }
+            parent.onCommit(field.stringValue)
+        }
+
+        // Return saves, including Option-Return and Control-Return (which would otherwise start a new line).
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            let newlines = [#selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)),
+                            #selector(NSResponder.insertLineBreak(_:)), #selector(NSResponder.insertParagraphSeparator(_:))]
+            guard newlines.contains(selector) else { return false }
+            control.window?.makeFirstResponder(nil)
+            return true
+        }
+    }
+}
+
+/// Lets clicks through to the row (for click-to-edit and dragging) except while it's being edited.
+final class TitleTextField: NSTextField {
+    var interactive = false
+    override func hitTest(_ point: NSPoint) -> NSView? { interactive ? super.hitTest(point) : nil }
+    override var acceptsFirstResponder: Bool { interactive && super.acceptsFirstResponder }
+}
+
+/// The field editor for row titles: a double click selects the whole title rather than one word.
+final class TitleFieldEditor: NSTextView {
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 { selectAll(nil) } else { super.mouseDown(with: event) }
+    }
+
+    // Paste multi-line text as one line (as a normal insert, so ⌘Z undoes it).
+    override func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string) else { return super.paste(sender) }
+        insertText(text.components(separatedBy: .newlines).joined(separator: " "), replacementRange: selectedRange())
     }
 }

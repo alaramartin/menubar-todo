@@ -199,6 +199,34 @@ final class PopupPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
 
+    private let titleEditor: TitleFieldEditor = {
+        let editor = TitleFieldEditor()
+        editor.isFieldEditor = true
+        editor.isRichText = false
+        editor.allowsUndo = true
+        return editor
+    }()
+
+    override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
+        object is TitleTextField ? titleEditor : super.fieldEditor(createFlag, for: object)
+    }
+
+    // A click anywhere that isn't a text field ends editing (clicking another row's title then starts editing that one).
+    // It ends on mouse up, not down: a row being edited can be taller than when idle, and shrinking it
+    // mid-click would move the row under the cursor before the click lands.
+    private var endEditingOnMouseUp = false
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, let frameView = contentView?.superview {
+            let hit = frameView.hitTest(frameView.convert(event.locationInWindow, from: nil))
+            endEditingOnMouseUp = !(hit is NSText || hit is NSTextField)
+        } else if event.type == .leftMouseUp, endEditingOnMouseUp {
+            endEditingOnMouseUp = false
+            makeFirstResponder(nil)
+        }
+        super.sendEvent(event)
+    }
+
     // The app has no Edit menu (it's an accessory app), so route the standard editing shortcuts to the text field ourselves.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -222,7 +250,10 @@ final class PopupPanel: NSPanel {
         makeKeyAndOrderFront(nil)
         onOpenChange?(true)
 
-        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            // A real click outside closes it on its first click. A later click of a double-click can land outside
+            // only because the popup shrank in between (a long title collapsing after its edit), so ignore it.
+            guard event.clickCount < 2 else { return }
             MainActor.assumeIsolated { self?.close() }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in

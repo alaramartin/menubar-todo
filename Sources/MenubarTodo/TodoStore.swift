@@ -36,8 +36,13 @@ final class TodoStore: ObservableObject {
         return [goal] + items.filter { $0.id != goal.id }
     }
 
+    /// Titles are one line (pasted text can bring line breaks along), trimmed.
+    private func clean(_ title: String) -> String {
+        title.components(separatedBy: .newlines).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
     func add(_ title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = clean(title)
         guard !trimmed.isEmpty else { return }
         items.append(TodoItem(title: trimmed))
     }
@@ -48,7 +53,7 @@ final class TodoStore: ObservableObject {
     }
 
     func rename(_ id: UUID, to title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = clean(title)
         guard !trimmed.isEmpty, let i = items.firstIndex(where: { $0.id == id }) else { return }
         items[i].title = trimmed
     }
