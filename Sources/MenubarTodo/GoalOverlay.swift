@@ -238,7 +238,8 @@ private final class OverlayWindow: NSPanel {
         hasShadow = false
         hidesOnDeactivate = false
         // Show on every desktop, but not over full-screen apps (their menu bar is hidden).
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        // Transient: Mission Control hides it, like the real menu bar items (stationary would keep it on screen).
+        collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
 
         label.lineBreakMode = .byTruncatingTail
         label.alignment = .center
