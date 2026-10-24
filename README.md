@@ -11,10 +11,21 @@ A tiny to-do list that lives in the macOS menu bar. Your one **top goal** is sho
 
 Everything is saved to `~/Library/Application Support/menubar-todo/todos.json` on every change, so your list is still there after you quit, restart or shut down. The app turns on Open at Login the first time it runs.
 
-## Build & install
+## Install from a release
+
+1. Download `MenubarTodo.zip` from the [latest release](https://github.com/alaramartin/menubar-todo/releases/latest) and unzip it.
+2. Drag **Menubar Todo.app** into **Applications**. Keep it there: the open-at-login setting points at that copy.
+3. Open it. The app isn't notarized by Apple, so macOS will block the first launch:
+   - Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to "Menubar Todo", then confirm.
+   - Or, in Terminal: `xattr -dr com.apple.quarantine "/Applications/Menubar Todo.app"`, then open it normally.
+
+After the first launch it opens at login on its own, and your list is saved on disk, so it survives quitting, restarting and shutting down. Works on Apple silicon and Intel Macs running macOS 14 or later.
+
+## Build & install from source
 
 ```sh
 ./build.sh --install   # builds, copies to /Applications, launches
+./build.sh --zip       # builds build/MenubarTodo.zip for a release
 ```
 
 Requires macOS 14+ and Swift 5.9+.
