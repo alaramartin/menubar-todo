@@ -17,6 +17,11 @@ final class GoalOverlay {
     /// Supplies the menu bar's current appearance so the text matches its color.
     var appearanceSource: (() -> NSAppearance?)?
 
+    /// Drawn with the menu bar's selection highlight, like the icon, while the popup is open.
+    var highlighted = false {
+        didSet { windows.values.forEach { $0.highlighted = highlighted } }
+    }
+
     private var text: String?
     private var windows: [ObjectIdentifier: OverlayWindow] = [:]
     private var timer: Timer?
@@ -24,8 +29,10 @@ final class GoalOverlay {
     init() {
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
-            // Give the new app's menus a moment to appear before measuring them.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { MainActor.assumeIsolated { self?.refresh() } }
+            // The new app's menus can take a moment to appear, so measure right away and again shortly after.
+            for delay in [0.0, 0.15, 0.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { self?.refresh() } }
+            }
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
@@ -62,6 +69,7 @@ final class GoalOverlay {
             let window = windows[ObjectIdentifier(screen)] ?? {
                 let w = OverlayWindow()
                 w.onClick = { [weak self] in self?.onClick?() }
+                w.highlighted = highlighted
                 windows[ObjectIdentifier(screen)] = w
                 return w
             }()
@@ -71,7 +79,7 @@ final class GoalOverlay {
             window.label.stringValue = text
             window.appearance = appearanceSource?()
 
-            let wanted = ceil(window.label.intrinsicContentSize.width) + 4
+            let wanted = ceil(window.label.intrinsicContentSize.width) + 4 + 2 * OverlayWindow.inset
             guard let slot = Self.placement(width: wanted, on: screen,
                                             barHeight: barHeight,
                                             statusItemRects: statusItemRects,
@@ -99,8 +107,9 @@ final class GoalOverlay {
         if let offset = menusRightOffset {
             blocked.append(sf.minX...(sf.minX + offset))
         } else {
-            // Without Accessibility access we can't measure them; assume a typical width.
-            blocked.append(sf.minX...(sf.minX + min(sf.width * 0.3, 420)))
+            // Without Accessibility access we can't measure them, and apps like Chrome reach most of
+            // the way to the center, so keep the whole left half clear rather than risk overlapping.
+            blocked.append(sf.minX...sf.midX)
         }
 
         // The camera notch.
@@ -213,8 +222,13 @@ final class GoalOverlay {
 
 /// A transparent, click-through-except-for-the-text window that sits in the menu bar.
 private final class OverlayWindow: NSPanel {
+    /// Room on each side of the text for the highlight.
+    static let inset: CGFloat = 8
     let label = NSTextField(labelWithString: "")
     var onClick: (() -> Void)?
+    var highlighted = false {
+        didSet { (contentView as? ClickView)?.highlighted = highlighted }
+    }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -237,8 +251,8 @@ private final class OverlayWindow: NSPanel {
         content.onClick = { [weak self] in self?.onClick?() }
         content.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            label.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.inset),
+            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.inset),
             label.centerYAnchor.constraint(equalTo: content.centerYAnchor),
         ])
         contentView = content
@@ -249,6 +263,18 @@ private final class OverlayWindow: NSPanel {
 
 private final class ClickView: NSView {
     var onClick: (() -> Void)?
+    var highlighted = false {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard highlighted else { return }
+        // Matches the rounded selection behind a clicked menu bar item.
+        let rect = bounds.insetBy(dx: 0, dy: 3)
+        NSColor.labelColor.withAlphaComponent(0.12).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+    }
+
     override func mouseDown(with event: NSEvent) { onClick?() }
     override func hitTest(_ point: NSPoint) -> NSView? {
         frame.contains(point) ? self : nil

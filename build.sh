@@ -31,7 +31,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP"
+# Sign with a stable identity when there is one, so macOS keeps the Accessibility permission across
+# rebuilds (an ad-hoc signature changes every build, which silently revokes it). Override with SIGN_ID.
+SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+codesign --force --sign "${SIGN_ID:--}" "$APP"
 echo "Built $APP"
 
 if [[ " $* " == *" --zip "* ]]; then
@@ -43,7 +46,7 @@ fi
 if [[ " $* " == *" --install "* ]]; then
     pkill -x MenubarTodo || true
     rm -rf "/Applications/Menubar Todo.app"
-    cp -R "$APP" /Applications/
+    mv "$APP" /Applications/ # move, not copy, so Spotlight and Settings only see one app
     open "/Applications/Menubar Todo.app"
     echo "Installed to /Applications and launched"
 fi

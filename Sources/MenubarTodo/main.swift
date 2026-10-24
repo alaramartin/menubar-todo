@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popup = PopupPanel(rootView: TodoView(store: store, updater: updater), store: store, updater: updater)
+        popup.onOpenChange = { [weak self] open in self?.setHighlighted(open) }
 
         overlay.appearanceSource = { [weak self] in self?.statusItem.button?.effectiveAppearance }
         overlay.onClick = { [weak self] in self?.togglePopup() }
@@ -40,6 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A checked-off goal no longer shows in the menu bar.
         let goal = store.goal
         overlay.setText(goal?.done == false ? goal?.title : nil)
+    }
+
+    /// Keeps the icon and the goal highlighted for as long as the popup is open.
+    private func setHighlighted(_ on: Bool) {
+        overlay.highlighted = on
+        // The button un-highlights itself when its click finishes, so set it after that.
+        DispatchQueue.main.async { [weak self] in self?.statusItem.button?.highlight(on) }
     }
 
     @objc private func statusItemClicked() {
@@ -152,6 +160,7 @@ final class PopupPanel: NSPanel {
     private var keyMonitor: Any?
     private let store: TodoStore
     private var cancellables: Set<AnyCancellable> = []
+    var onOpenChange: ((Bool) -> Void)?
 
     init(rootView: TodoView, store: TodoStore, updater: Updater) {
         self.store = store
@@ -211,6 +220,7 @@ final class PopupPanel: NSPanel {
         layoutToFit()
         NSApp.activate()
         makeKeyAndOrderFront(nil)
+        onOpenChange?(true)
 
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
@@ -236,6 +246,7 @@ final class PopupPanel: NSPanel {
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         makeFirstResponder(nil) // commits an in-progress edit
         super.close()
+        onOpenChange?(false)
     }
 
     override func resignKey() {
