@@ -26,10 +26,12 @@ After the first launch it opens at login on its own, and your list is saved on d
 
 ```sh
 ./build.sh --install   # builds, copies to /Applications, launches
-./build.sh --zip       # builds build/MenubarTodo.zip for a release
-VERSION=1.2.0 ./build.sh --zip   # set the version (bump it for each release so update notices work)
+./build.sh --zip       # builds build/MenubarTodo.zip
+scripts/release.sh patch         # bump the version (patch, minor, major or e.g. 1.4.0), build and publish a GitHub release
 swift scripts/make-icon.swift    # regenerate Resources/AppIcon.icns
 ```
+
+The app's version comes from the newest `v*` git tag, so local builds match the latest release.
 
 Requires macOS 14+ and Swift 5.9+.
 

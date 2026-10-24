@@ -5,7 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${VERSION:-1.1.0}"
+# Version = the newest release tag (v1.2.1 → 1.2.1), unless VERSION is set. scripts/release.sh sets it for a new release.
+git fetch --tags -q 2>/dev/null || true
+LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+VERSION="${VERSION:-${LATEST_TAG#v}}"
+VERSION="${VERSION:-0.0.0}"
 swift build -c release --arch arm64 --arch x86_64
 BIN=".build/apple/Products/Release/MenubarTodo"
 APP="build/Menubar Todo.app"
