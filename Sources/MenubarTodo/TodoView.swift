@@ -5,6 +5,9 @@ struct TodoView: View {
     @ObservedObject var updater: Updater
     @State private var draft = ""
     @State private var dragging: UUID?
+    @State private var dragY: CGFloat = 0
+    @State private var grabOffset: CGFloat = 0
+    @State private var rowHeights: [UUID: CGFloat] = [:]
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -33,14 +36,22 @@ struct TodoView: View {
                     VStack(spacing: 0) {
                         ForEach(store.orderedItems) { item in
                             let isGoal = item.id == store.goalID
+                            let isDragging = dragging == item.id
                             TodoRow(item: item, isGoal: isGoal, store: store)
-                                .onDrag {
-                                    dragging = item.id
-                                    return NSItemProvider(object: item.id.uuidString as NSString)
-                                }
-                                .onDrop(of: [.text], delegate: ReorderDropDelegate(target: item.id, dragging: $dragging, store: store))
+                                .background(GeometryReader { g in
+                                    Color.clear.preference(key: RowHeightsKey.self, value: [item.id: g.size.height])
+                                })
+                                .background(isDragging ? Color.white : Color.clear)
+                                .shadow(color: .black.opacity(isDragging ? 0.12 : 0), radius: 4, y: 1)
+                                .offset(y: isDragging ? dragY - grabOffset - layoutMinY(item.id) : 0)
+                                .zIndex(isDragging ? 1 : 0)
+                                // The dragged row tracks the cursor exactly; only the others animate.
+                                .transaction { if isDragging { $0.animation = nil } }
+                                .gesture(reorderGesture(item.id), including: isGoal || store.editingID == item.id ? .subviews : .all)
                         }
                     }
+                    .coordinateSpace(name: "list")
+                    .onPreferenceChange(RowHeightsKey.self) { rowHeights = $0 }
                     .padding(.vertical, 4)
                 }
                 .frame(maxHeight: 360)
@@ -63,24 +74,48 @@ struct TodoView: View {
     }
 }
 
-/// Moves the dragged row into place as it passes over other rows.
-private struct ReorderDropDelegate: DropDelegate {
-    let target: UUID
-    @Binding var dragging: UUID?
-    let store: TodoStore
-
-    func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != target else { return }
-        withAnimation(.easeInOut(duration: 0.15)) {
-            store.move(dragging, toPositionOf: target)
+extension TodoView {
+    /// Where a row sits in the list given the current order (computed from row
+    /// heights rather than measured, so it's correct the instant the order changes).
+    private func layoutMinY(_ id: UUID) -> CGFloat {
+        var y: CGFloat = 0
+        for item in store.orderedItems {
+            if item.id == id { return y }
+            y += rowHeights[item.id] ?? 0
         }
+        return y
     }
 
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    /// Drag a row up or down; it swaps with a neighbour once the cursor passes that neighbour's middle.
+    private func reorderGesture(_ id: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("list"))
+            .onChanged { value in
+                if dragging != id {
+                    dragging = id
+                    grabOffset = value.startLocation.y - layoutMinY(id)
+                }
+                dragY = value.location.y
 
-    func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
-        return true
+                let order = store.orderedItems.map(\.id)
+                guard let from = order.firstIndex(of: id) else { return }
+                for (index, other) in order.enumerated() where other != id && other != store.goalID {
+                    let mid = layoutMinY(other) + (rowHeights[other] ?? 0) / 2
+                    if (index > from && value.location.y > mid) || (index < from && value.location.y < mid) {
+                        withAnimation(.easeInOut(duration: 0.15)) { store.move(id, toPositionOf: other) }
+                        break
+                    }
+                }
+            }
+            .onEnded { _ in
+                withAnimation(.easeOut(duration: 0.15)) { dragging = nil }
+            }
+    }
+}
+
+private struct RowHeightsKey: PreferenceKey {
+    static let defaultValue: [UUID: CGFloat] = [:]
+    static func reduce(value: inout [UUID: CGFloat], nextValue: () -> [UUID: CGFloat]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
