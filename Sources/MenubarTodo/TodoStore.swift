@@ -14,6 +14,8 @@ final class TodoStore: ObservableObject {
     @Published var items: [TodoItem] = [] { didSet { save() } }
     /// The one item marked as the top goal (shown in the middle of the menu bar).
     @Published var goalID: UUID? { didSet { save() } }
+    /// The item currently being renamed in the popup (not saved).
+    @Published var editingID: UUID?
 
     private let fileURL: URL
     private var loading = false
@@ -43,6 +45,20 @@ final class TodoStore: ObservableObject {
     func toggle(_ id: UUID) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         items[i].done.toggle()
+    }
+
+    func rename(_ id: UUID, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].title = trimmed
+    }
+
+    /// Moves an item into another item's place (used while dragging to reorder).
+    func move(_ id: UUID, toPositionOf target: UUID) {
+        guard id != target, target != goalID,
+              let from = items.firstIndex(where: { $0.id == id }),
+              let to = items.firstIndex(where: { $0.id == target }) else { return }
+        items.insert(items.remove(at: from), at: to)
     }
 
     func delete(_ id: UUID) {

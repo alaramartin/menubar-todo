@@ -8,6 +8,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = TodoStore()
     private let overlay = GoalOverlay()
+    private let updater = Updater()
     private var statusItem: NSStatusItem!
     private var popup: PopupPanel!
     private var cancellables: Set<AnyCancellable> = []
@@ -22,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
-        popup = PopupPanel(rootView: TodoView(store: store), store: store)
+        popup = PopupPanel(rootView: TodoView(store: store, updater: updater), store: store, updater: updater)
 
         overlay.appearanceSource = { [weak self] in self?.statusItem.button?.effectiveAppearance }
         overlay.onClick = { [weak self] in self?.togglePopup() }
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         setUpOnFirstLaunch()
+        updater.start()
     }
 
     private func updateGoal() {
@@ -68,12 +70,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ax.target = self
             menu.addItem(ax)
         }
+        if let update = updater.available {
+            let item = NSMenuItem(title: "Update Available (\(update.version))…", action: #selector(openUpdate), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        } else {
+            let item = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Menubar Todo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc private func openUpdate() {
+        if let url = updater.available?.url { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func checkForUpdates() {
+        Task {
+            let alert = NSAlert()
+            do {
+                if let update = try await updater.check() {
+                    alert.messageText = "Version \(update.version) is available"
+                    alert.informativeText = "You have version \(updater.currentVersion)."
+                    alert.addButton(withTitle: "Download")
+                    alert.addButton(withTitle: "Later")
+                } else {
+                    alert.messageText = "You're up to date"
+                    alert.informativeText = "Menubar Todo \(updater.currentVersion) is the latest version."
+                }
+            } catch {
+                alert.messageText = "Couldn't check for updates"
+                alert.informativeText = error.localizedDescription
+            }
+            NSApp.activate()
+            if alert.runModal() == .alertFirstButtonReturn, let url = updater.available?.url {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     @objc private func toggleLoginItem() {
@@ -111,9 +150,11 @@ final class PopupPanel: NSPanel {
     private var anchor: NSRect = .zero
     private var clickMonitor: Any?
     private var keyMonitor: Any?
-    private var cancellable: AnyCancellable?
+    private let store: TodoStore
+    private var cancellables: Set<AnyCancellable> = []
 
-    init(rootView: TodoView, store: TodoStore) {
+    init(rootView: TodoView, store: TodoStore, updater: Updater) {
+        self.store = store
         hosting = NSHostingView(rootView: rootView)
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         level = .popUpMenu
@@ -139,8 +180,11 @@ final class PopupPanel: NSPanel {
         contentView = container
 
         // Grow/shrink with the list.
-        cancellable = store.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.layoutToFit() } }
+        for publisher in [store.objectWillChange.eraseToAnyPublisher(), updater.objectWillChange.eraseToAnyPublisher()] {
+            publisher.sink { [weak self] _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.layoutToFit() } }
+            }
+            .store(in: &cancellables)
         }
     }
 
@@ -156,8 +200,15 @@ final class PopupPanel: NSPanel {
             MainActor.assumeIsolated { self?.close() }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 { // Escape
-                MainActor.assumeIsolated { self?.close() }
+            if event.keyCode == 53 { // Escape: cancel an edit, otherwise close
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.store.editingID != nil {
+                        self.store.editingID = nil
+                    } else {
+                        self.close()
+                    }
+                }
                 return nil
             }
             return event
@@ -167,6 +218,7 @@ final class PopupPanel: NSPanel {
     override func close() {
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        makeFirstResponder(nil) // commits an in-progress edit
         super.close()
     }
 
