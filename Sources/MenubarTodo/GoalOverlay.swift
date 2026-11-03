@@ -220,7 +220,7 @@ final class GoalOverlay {
     }
 }
 
-/// A transparent, click-through-except-for-the-text window that sits in the menu bar.
+/// A transparent window that sits in the menu bar; clicking anywhere on it opens the popup.
 private final class OverlayWindow: NSPanel {
     /// Room on each side of the text for the highlight.
     static let inset: CGFloat = 8
@@ -237,6 +237,9 @@ private final class OverlayWindow: NSPanel {
         isOpaque = false
         hasShadow = false
         hidesOnDeactivate = false
+        // A clear window only gets clicks on its drawn pixels, so the gaps between letters fell
+        // through to the menu bar. Setting this explicitly makes the whole window clickable.
+        ignoresMouseEvents = false
         // Show on every desktop, but not over full-screen apps (their menu bar is hidden).
         // Transient: Mission Control hides it, like the real menu bar items (stationary would keep it on screen).
         collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
@@ -277,6 +280,8 @@ private final class ClickView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
+    // Act on the first click even while another app is active, like a status item does.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         frame.contains(point) ? self : nil
     }
