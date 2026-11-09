@@ -278,12 +278,15 @@ private struct TitleField: NSViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView field: TitleTextField, context: Context) -> CGSize? {
         let width = proposal.width ?? 200
+        // SwiftUI sizes the field's alignment rect; its frame, where the text wraps, is wider by these insets.
+        let insets = field.alignmentRectInsets
+        let drawnWidth = width + insets.left + insets.right
         func height(_ string: String) -> CGFloat {
             let cell = NSTextFieldCell(textCell: string)
             cell.font = font
             cell.wraps = true
             cell.lineBreakMode = .byWordWrapping
-            return cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height
+            return cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: drawnWidth, height: .greatestFiniteMagnitude)).height
         }
         let h = max(height(editing ? text : title), height("A"))
         return CGSize(width: width, height: ceil(h))
