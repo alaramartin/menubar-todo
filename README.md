@@ -3,7 +3,7 @@
 A tiny to-do list that lives in the macOS menu bar. Your one **top goal** is shown as text in the middle of the menu bar.
 
 - Click the checklist icon (or the goal text) to open a plain white popup.
-- Type and press Return to add a task. Click the box to check it off. Double-click a task to edit it (Return saves, Escape cancels). Drag tasks to reorder them. Hover a task to show:
+- Type and press Return to add a task. Click the box to check it off. Click a task to edit it (Return saves, Escape cancels). Drag tasks to reorder them; in a long list, hold a task at the top or bottom edge and the list scrolls. Hover a task to show:
   - ☆ to make it the top goal (there's only one; it moves to the top of the list)
   - ✕ to delete it
 - The goal is centered in the menu bar. If app menus, the notch or other menu bar icons are in the way, it moves as close to the center as it can (with padding) and truncates with "…" if needed. A checked-off goal is hidden from the menu bar.

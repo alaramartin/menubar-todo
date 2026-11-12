@@ -9,6 +9,13 @@ struct TodoView: View {
     @State private var dragY: CGFloat = 0
     @State private var grabOffset: CGFloat = 0
     @State private var rowHeights: [UUID: CGFloat] = [:]
+    /// Where the cursor is during a drag, measured from the top of the visible part of the list.
+    @State private var pointerY: CGFloat = 0
+    @State private var autoScroll = AutoScroller()
+    /// True while the mouse is held on a row. SwiftUI resets it when a drag ends or is cancelled
+    /// (a cancelled drag skips onEnded), so it's what ends the drag.
+    @GestureState private var reorderActive = false
+    @State private var listGeneration = 0
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -44,19 +51,25 @@ struct TodoView: View {
                                 })
                                 .background(isDragging ? Color.white : Color.clear)
                                 .shadow(color: .black.opacity(isDragging ? 0.12 : 0), radius: 4, y: 1)
-                                .offset(y: isDragging ? dragY - grabOffset - layoutMinY(item.id) : 0)
+                                .offset(y: isDragging ? draggedRowTop(item.id) - layoutMinY(item.id) : 0)
                                 .zIndex(isDragging ? 1 : 0)
                                 // The dragged row tracks the cursor exactly; only the others animate.
                                 .transaction { if isDragging { $0.animation = nil } }
                                 .gesture(reorderGesture(item.id), including: isGoal || store.editingID == item.id ? .subviews : .all)
                         }
                     }
+                    .id(listGeneration)
                     .coordinateSpace(name: "list")
                     .onPreferenceChange(RowHeightsKey.self) { rowHeights = $0 }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, listPadding)
+                    .background(EnclosingScrollView { autoScroll.scrollView = $0 })
                 }
+                .coordinateSpace(name: "viewport")
                 .frame(maxHeight: 360)
                 .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: reorderActive) { _, active in
+                    if !active { endDrag() }
+                }
             }
 
             if let update = updater.available {
@@ -76,6 +89,17 @@ struct TodoView: View {
 }
 
 extension TodoView {
+    private var listPadding: CGFloat { 4 }
+
+    /// The dragged row follows the cursor but stays inside the visible part of the list.
+    private func draggedRowTop(_ id: UUID) -> CGFloat {
+        let top = dragY - grabOffset
+        guard let scroller = autoScroll.scrollView else { return top }
+        let visibleTop = scroller.offset - listPadding
+        let visibleBottom = visibleTop + scroller.visibleHeight - (rowHeights[id] ?? 0)
+        return min(max(top, visibleTop), max(visibleTop, visibleBottom))
+    }
+
     /// Where a row sits in the list given the current order (computed from row
     /// heights rather than measured, so it's correct the instant the order changes).
     private func layoutMinY(_ id: UUID) -> CGFloat {
@@ -89,27 +113,135 @@ extension TodoView {
 
     /// Drag a row up or down; it swaps with a neighbour once the cursor passes that neighbour's middle.
     private func reorderGesture(_ id: UUID) -> some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .named("list"))
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("viewport"))
+            .updating($reorderActive) { _, active, _ in active = true }
             .onChanged { value in
+                pointerY = value.location.y
                 if dragging != id {
                     dragging = id
-                    grabOffset = value.startLocation.y - layoutMinY(id)
+                    grabOffset = listY(value.startLocation.y) - layoutMinY(id)
+                    autoScroll.start { autoScrollTick(id) }
                 }
-                dragY = value.location.y
+                followPointer(id)
+            }
+            .onEnded { _ in endDrag() }
+    }
 
-                let order = store.orderedItems.map(\.id)
-                guard let from = order.firstIndex(of: id) else { return }
-                for (index, other) in order.enumerated() where other != id && other != store.goalID {
-                    let mid = layoutMinY(other) + (rowHeights[other] ?? 0) / 2
-                    if (index > from && value.location.y > mid) || (index < from && value.location.y < mid) {
-                        withAnimation(.easeInOut(duration: 0.15)) { store.move(id, toPositionOf: other) }
-                        break
-                    }
-                }
+    private func endDrag() {
+        autoScroll.stop()
+        guard dragging != nil else { return }
+        withAnimation(.easeOut(duration: 0.15)) { dragging = nil }
+    }
+
+    /// Converts a height in the visible part of the list to one in the whole list.
+    private func listY(_ viewportY: CGFloat) -> CGFloat {
+        viewportY + (autoScroll.scrollView?.offset ?? 0) - listPadding
+    }
+
+    /// Moves the dragged row to the cursor, swapping it past any neighbour whose middle the cursor has crossed.
+    private func followPointer(_ id: UUID) {
+        let visibleHeight = autoScroll.scrollView?.visibleHeight ?? .greatestFiniteMagnitude
+        let y = listY(min(max(pointerY, 0), visibleHeight))
+        dragY = listY(pointerY)
+
+        let order = store.orderedItems.map(\.id)
+        guard let from = order.firstIndex(of: id) else { return }
+        for (index, other) in order.enumerated() where other != id && other != store.goalID {
+            let mid = layoutMinY(other) + (rowHeights[other] ?? 0) / 2
+            if (index > from && y > mid) || (index < from && y < mid) {
+                withAnimation(.easeInOut(duration: 0.15)) { store.move(id, toPositionOf: other) }
+                break
             }
-            .onEnded { _ in
-                withAnimation(.easeOut(duration: 0.15)) { dragging = nil }
-            }
+        }
+    }
+
+    /// While a dragged row is held near the top or bottom edge, scroll that way: slowly at first,
+    /// faster the closer to (or further past) the edge the cursor is.
+    private func autoScrollTick(_ id: UUID) {
+        // SwiftUI can miss the mouse-up while this timer runs, so check the button directly.
+        if NSEvent.pressedMouseButtons & 1 == 0 {
+            endDrag()
+            listGeneration += 1 // rebuilds the rows, which drops SwiftUI's stuck drag
+            return
+        }
+        guard dragging == id, let scroller = autoScroll.scrollView else { return }
+        let zone: CGFloat = 28
+        let maxStep: CGFloat = 6 // points per frame
+        let height = scroller.visibleHeight
+        var step: CGFloat = 0
+        if pointerY < zone {
+            step = -maxStep * min(1, (zone - pointerY) / zone)
+        } else if pointerY > height - zone {
+            step = maxStep * min(1, (pointerY - (height - zone)) / zone)
+        }
+        guard step != 0, scroller.scroll(by: step) else { return }
+        followPointer(id)
+    }
+}
+
+/// Runs the auto-scroll timer during a drag and scrolls the list's NSScrollView.
+@MainActor
+final class AutoScroller {
+    weak var scrollView: NSScrollView?
+    private var timer: DispatchSourceTimer?
+
+    func start(_ tick: @escaping @MainActor () -> Void) {
+        stop()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(16))
+        timer.setEventHandler { MainActor.assumeIsolated { tick() } }
+        timer.resume()
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+}
+
+extension NSScrollView {
+    /// How far the list is scrolled down from the top.
+    var offset: CGFloat {
+        guard let document = documentView else { return 0 }
+        let clip = contentView.bounds
+        return document.isFlipped ? clip.minY : document.frame.height - clip.maxY
+    }
+
+    var visibleHeight: CGFloat { contentView.bounds.height }
+
+    /// Scrolls by `delta` points (positive is down), stopping at either end. Returns whether it moved.
+    func scroll(by delta: CGFloat) -> Bool {
+        guard let document = documentView else { return false }
+        let maxOffset = max(0, document.frame.height - visibleHeight)
+        let target = min(max(offset + delta, 0), maxOffset)
+        guard abs(target - offset) > 0.01 else { return false }
+        let y = document.isFlipped ? target : document.frame.height - visibleHeight - target
+        contentView.scroll(to: NSPoint(x: contentView.bounds.minX, y: y))
+        reflectScrolledClipView(contentView)
+        return true
+    }
+}
+
+/// Hands over the NSScrollView behind a SwiftUI ScrollView, so a drag can scroll it.
+private struct EnclosingScrollView: NSViewRepresentable {
+    let found: (NSScrollView?) -> Void
+
+    func makeNSView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.found = found
+        return probe
+    }
+
+    func updateNSView(_ probe: Probe, context: Context) { probe.found = found }
+
+    final class Probe: NSView {
+        var found: ((NSScrollView?) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            found?(enclosingScrollView)
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
